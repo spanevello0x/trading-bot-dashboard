@@ -6,6 +6,7 @@
   <title>🎯 Trading Bot Dashboard - Diego</title>
   <meta name="description" content="Dashboard em tempo real do Pullback to Swing Trading Bot no Hyperliquid">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎯</text></svg>">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     
@@ -91,10 +92,12 @@
     
     table { width: 100%; border-collapse: collapse; }
     th { text-align: left; padding: 12px; color: #888; font-size: 0.85rem; border-bottom: 1px solid rgba(255,255,255,0.1); }
-    td { padding: 12px; border-bottom: 1px solid rgba(255,255,255,0.05); }
+    td { padding: 12px; border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 0.9rem; }
     
-    .side-long { background: rgba(0,200,83,0.2); color: #00c853; padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; }
-    .side-short { background: rgba(255,82,82,0.2); color: #ff5252; padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; }
+    .side-long, .side-buy { background: rgba(0,200,83,0.2); color: #00c853; padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; }
+    .side-short, .side-sell { background: rgba(255,82,82,0.2); color: #ff5252; padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; }
+    .side-deposit { background: rgba(0,212,255,0.2); color: #00d4ff; padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; }
+    .side-withdraw { background: rgba(255,165,0,0.2); color: #ffa500; padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; }
     
     .config-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
     .config-item { background: rgba(255,255,255,0.05); padding: 12px; border-radius: 8px; text-align: center; }
@@ -105,7 +108,6 @@
     .price-item { text-align: center; padding: 16px 24px; background: rgba(255,255,255,0.05); border-radius: 12px; min-width: 140px; }
     .price-item .coin { font-size: 0.9rem; color: #888; }
     .price-item .price { font-size: 1.5rem; font-weight: 600; }
-    .price-item .change { font-size: 0.8rem; margin-top: 4px; }
     
     .setup-badge {
       background: linear-gradient(90deg, #00d4ff, #7b2cbf);
@@ -129,10 +131,7 @@
       word-break: break-all;
     }
     
-    .wallet-link {
-      color: #00d4ff;
-      text-decoration: none;
-    }
+    .wallet-link { color: #00d4ff; text-decoration: none; }
     .wallet-link:hover { text-decoration: underline; }
     
     .powered-by {
@@ -144,11 +143,52 @@
     }
     .powered-by a { color: #7b2cbf; text-decoration: none; }
     
+    .chart-container {
+      position: relative;
+      height: 200px;
+      margin-top: 16px;
+    }
+    
+    .tabs {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+    .tab {
+      padding: 8px 16px;
+      background: rgba(255,255,255,0.1);
+      border: none;
+      border-radius: 8px;
+      color: #888;
+      cursor: pointer;
+      font-size: 0.85rem;
+    }
+    .tab.active {
+      background: linear-gradient(90deg, #00d4ff, #7b2cbf);
+      color: #fff;
+    }
+    .tab:hover { background: rgba(255,255,255,0.2); }
+    .tab.active:hover { background: linear-gradient(90deg, #00d4ff, #7b2cbf); }
+    
+    .hash-link {
+      color: #00d4ff;
+      text-decoration: none;
+      font-family: monospace;
+      font-size: 0.8rem;
+    }
+    .hash-link:hover { text-decoration: underline; }
+    
+    .scrollable {
+      max-height: 400px;
+      overflow-y: auto;
+    }
+    
     @media (max-width: 768px) {
       header h1 { font-size: 1.8rem; }
       .big-number { font-size: 2rem; }
       .grid { grid-template-columns: 1fr; }
       .prices { flex-direction: column; align-items: center; }
+      td, th { padding: 8px; font-size: 0.8rem; }
     }
   </style>
 </head>
@@ -179,6 +219,7 @@
   <script>
     const WALLET = '0x4FFf1187E66b66bC8E31886F2b861f951736a276';
     const HL_API = 'https://api.hyperliquid.xyz/info';
+    const INITIAL_DEPOSIT = 15.52;
     
     const CONFIG = {
       maxTrades: 5,
@@ -191,6 +232,9 @@
       coins: ['BTC', 'ETH', 'SOL']
     };
     
+    let portfolioChart = null;
+    let currentPeriod = 'week';
+    
     function formatMoney(v) { return '$' + parseFloat(v).toFixed(2); }
     function formatPrice(v) {
       v = parseFloat(v);
@@ -199,6 +243,8 @@
       return '$' + v.toFixed(4);
     }
     function formatTime(t) { return new Date(t).toLocaleString('pt-BR'); }
+    function formatTimeShort(t) { return new Date(t).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }); }
+    function truncateHash(hash) { return hash ? hash.slice(0, 10) + '...' + hash.slice(-6) : ''; }
     
     async function fetchHL(type, extra = {}) {
       const res = await fetch(HL_API, {
@@ -216,10 +262,13 @@
       badge.textContent = '⏳ Atualizando...';
       
       try {
-        const [account, mids, fills] = await Promise.all([
+        const [account, mids, fills, ledger, portfolio, orders] = await Promise.all([
           fetchHL('clearinghouseState', { user: WALLET }),
           fetchHL('allMids'),
-          fetchHL('userFills', { user: WALLET })
+          fetchHL('userFills', { user: WALLET }),
+          fetchHL('userNonFundingLedgerUpdates', { user: WALLET }),
+          fetchHL('portfolio', { user: WALLET }),
+          fetchHL('historicalOrders', { user: WALLET })
         ]);
         
         const data = {
@@ -242,7 +291,10 @@
             ETH: parseFloat(mids.ETH || 0), 
             SOL: parseFloat(mids.SOL || 0) 
           },
-          fills: (fills || []).slice(0, 20)
+          fills: (fills || []).slice(0, 50),
+          ledger: (ledger || []).reverse(),
+          portfolio: portfolio || [],
+          orders: (orders || []).slice(0, 50)
         };
         
         renderDashboard(data);
@@ -257,18 +309,80 @@
           <div class="error">
             <p>❌ Erro ao conectar com Hyperliquid</p>
             <p style="color: #888; margin-top: 8px; font-size: 0.9rem;">${e.message}</p>
-            <p style="color: #666; margin-top: 12px; font-size: 0.8rem;">Tentando novamente em 30 segundos...</p>
           </div>
         `;
       }
     }
     
+    function renderChart(portfolio) {
+      const ctx = document.getElementById('portfolioChart');
+      if (!ctx) return;
+      
+      const periodData = portfolio.find(p => p[0] === currentPeriod);
+      if (!periodData) return;
+      
+      const history = periodData[1].accountValueHistory || [];
+      const pnlHistory = periodData[1].pnlHistory || [];
+      
+      const labels = history.map(h => formatTimeShort(h[0]));
+      const values = history.map(h => parseFloat(h[1]));
+      const pnl = pnlHistory.map(h => parseFloat(h[1]));
+      
+      if (portfolioChart) {
+        portfolioChart.destroy();
+      }
+      
+      portfolioChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: labels,
+          datasets: [{
+            label: 'Valor da Conta',
+            data: values,
+            borderColor: '#00d4ff',
+            backgroundColor: 'rgba(0, 212, 255, 0.1)',
+            fill: true,
+            tension: 0.4
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false }
+          },
+          scales: {
+            x: { 
+              display: true,
+              ticks: { color: '#666', maxTicksLimit: 6 },
+              grid: { color: 'rgba(255,255,255,0.05)' }
+            },
+            y: { 
+              display: true,
+              ticks: { color: '#666', callback: v => '$' + v.toFixed(2) },
+              grid: { color: 'rgba(255,255,255,0.05)' }
+            }
+          }
+        }
+      });
+    }
+    
     function renderDashboard(data) {
-      const { account, prices, fills } = data;
-      const initialValue = 15.52; // Valor inicial depositado
-      const pnlTotal = account.value - initialValue;
-      const pnlPct = ((pnlTotal / initialValue) * 100).toFixed(2);
+      const { account, prices, fills, ledger, portfolio, orders } = data;
+      const pnlTotal = account.value - INITIAL_DEPOSIT;
+      const pnlPct = INITIAL_DEPOSIT > 0 ? ((pnlTotal / INITIAL_DEPOSIT) * 100).toFixed(2) : 0;
       const pnlClass = pnlTotal >= 0 ? 'positive' : 'negative';
+      
+      // Calcular estatísticas de trades
+      const buyFills = fills.filter(f => f.side === 'B').length;
+      const sellFills = fills.filter(f => f.side === 'A').length;
+      const totalVolume = fills.reduce((acc, f) => acc + parseFloat(f.sz) * parseFloat(f.px), 0);
+      
+      // Calcular depósitos e saques
+      const deposits = ledger.filter(l => l.delta?.type === 'deposit');
+      const withdrawals = ledger.filter(l => l.delta?.type === 'withdraw');
+      const totalDeposits = deposits.reduce((acc, d) => acc + parseFloat(d.delta?.usdc || 0), 0);
+      const totalWithdrawals = withdrawals.reduce((acc, w) => acc + parseFloat(w.delta?.usdc || 0), 0);
       
       document.getElementById('dashboard').innerHTML = `
         <div class="prices" style="margin-bottom: 20px;">
@@ -287,6 +401,7 @@
         </div>
         
         <div class="grid">
+          <!-- Conta -->
           <div class="card">
             <h2>💰 Conta</h2>
             <div class="big-number ${pnlClass}">${formatMoney(account.value)}</div>
@@ -296,8 +411,22 @@
             <div class="stat-row"><span class="stat-label">Disponível</span><span class="stat-value">${formatMoney(account.withdrawable)}</span></div>
             <div class="stat-row"><span class="stat-label">Margem Usada</span><span class="stat-value">${formatMoney(account.marginUsed)}</span></div>
             <div class="stat-row"><span class="stat-label">Posições</span><span class="stat-value">${account.positions.length} / ${CONFIG.maxTrades}</span></div>
+            <div class="stat-row"><span class="stat-label">Total Depositado</span><span class="stat-value positive">+${formatMoney(totalDeposits)}</span></div>
+            <div class="stat-row"><span class="stat-label">Total Sacado</span><span class="stat-value negative">${formatMoney(totalWithdrawals)}</span></div>
           </div>
           
+          <!-- Estatísticas de Trading -->
+          <div class="card">
+            <h2>📊 Estatísticas</h2>
+            <div class="stat-row"><span class="stat-label">Total de Trades</span><span class="stat-value">${fills.length}</span></div>
+            <div class="stat-row"><span class="stat-label">Compras (Buy)</span><span class="stat-value positive">${buyFills}</span></div>
+            <div class="stat-row"><span class="stat-label">Vendas (Sell)</span><span class="stat-value negative">${sellFills}</span></div>
+            <div class="stat-row"><span class="stat-label">Volume Total</span><span class="stat-value">${formatMoney(totalVolume)}</span></div>
+            <div class="stat-row"><span class="stat-label">Ordens Históricas</span><span class="stat-value">${orders.length}</span></div>
+            <div class="stat-row"><span class="stat-label">Transações Ledger</span><span class="stat-value">${ledger.length}</span></div>
+          </div>
+          
+          <!-- Setup -->
           <div class="card">
             <h2>⚙️ Setup Ativo</h2>
             <div class="setup-badge" style="margin-bottom: 16px;">${CONFIG.setup}</div>
@@ -310,22 +439,28 @@
               <div class="config-item"><div class="label">Por Trade</div><div class="value">${CONFIG.positionPct}%</div></div>
             </div>
           </div>
-          
-          <div class="card">
-            <h2>📊 Regras de Risco</h2>
-            <div class="stat-row"><span class="stat-label">✅ Stop Loss</span><span class="stat-value">Obrigatório</span></div>
-            <div class="stat-row"><span class="stat-label">✅ Take Profit</span><span class="stat-value">Obrigatório</span></div>
-            <div class="stat-row"><span class="stat-label">✅ RR Positivo</span><span class="stat-value">≥ 1.5:1</span></div>
-            <div class="stat-row"><span class="stat-label">📈 Backtest WR</span><span class="stat-value positive">56-67%</span></div>
-            <div class="stat-row"><span class="stat-label">📊 Setup</span><span class="stat-value">Rule-Based</span></div>
+        </div>
+        
+        <!-- Gráfico de Portfolio -->
+        <div class="card full-width" style="margin-bottom: 20px;">
+          <h2>📈 Histórico do Portfolio</h2>
+          <div class="tabs">
+            <button class="tab ${currentPeriod === 'day' ? 'active' : ''}" onclick="changePeriod('day')">24h</button>
+            <button class="tab ${currentPeriod === 'week' ? 'active' : ''}" onclick="changePeriod('week')">7 dias</button>
+            <button class="tab ${currentPeriod === 'month' ? 'active' : ''}" onclick="changePeriod('month')">30 dias</button>
+            <button class="tab ${currentPeriod === 'allTime' ? 'active' : ''}" onclick="changePeriod('allTime')">Total</button>
+          </div>
+          <div class="chart-container">
+            <canvas id="portfolioChart"></canvas>
           </div>
         </div>
         
+        <!-- Posições Abertas -->
         <div class="card full-width" style="margin-bottom: 20px;">
           <h2>📈 Posições Abertas</h2>
           ${account.positions.length === 0 ? 
             '<p style="color: #888; text-align: center; padding: 20px;">📭 Nenhuma posição aberta - Bot aguardando setup</p>' :
-            '<table><thead><tr><th>Ativo</th><th>Lado</th><th>Tamanho</th><th>Entrada</th><th>Atual</th><th>PnL</th><th>Lev</th></tr></thead><tbody>' +
+            '<div class="scrollable"><table><thead><tr><th>Ativo</th><th>Lado</th><th>Tamanho</th><th>Entrada</th><th>Atual</th><th>PnL</th><th>Lev</th></tr></thead><tbody>' +
             account.positions.map(p => 
               '<tr><td><strong>' + p.coin + '</strong></td>' +
               '<td><span class="side-' + p.side.toLowerCase() + '">' + p.side + '</span></td>' +
@@ -335,28 +470,60 @@
               '<td class="' + (p.unrealizedPnl >= 0 ? 'positive' : 'negative') + '">' + (p.unrealizedPnl >= 0 ? '+' : '') + formatMoney(p.unrealizedPnl) + '</td>' +
               '<td>' + p.leverage + 'x</td></tr>'
             ).join('') +
-            '</tbody></table>'
+            '</tbody></table></div>'
           }
         </div>
         
-        <div class="card full-width">
-          <h2>📜 Histórico de Trades (Hyperliquid)</h2>
+        <!-- Histórico de Trades -->
+        <div class="card full-width" style="margin-bottom: 20px;">
+          <h2>📜 Histórico de Trades (${fills.length} fills)</h2>
           ${fills.length === 0 ?
             '<p style="color: #888; text-align: center; padding: 20px;">Nenhum trade executado ainda</p>' :
-            '<table><thead><tr><th>Data/Hora</th><th>Ativo</th><th>Lado</th><th>Quantidade</th><th>Preço</th></tr></thead><tbody>' +
-            fills.map(f => 
-              '<tr><td>' + formatTime(f.time) + '</td>' +
+            '<div class="scrollable"><table><thead><tr><th>Data/Hora</th><th>Ativo</th><th>Lado</th><th>Quantidade</th><th>Preço</th><th>Valor</th><th>Fee</th></tr></thead><tbody>' +
+            fills.map(f => {
+              const value = parseFloat(f.sz) * parseFloat(f.px);
+              return '<tr><td>' + formatTimeShort(f.time) + '</td>' +
               '<td><strong>' + f.coin + '</strong></td>' +
-              '<td><span class="side-' + (f.side === 'B' ? 'long' : 'short') + '">' + (f.side === 'B' ? 'BUY' : 'SELL') + '</span></td>' +
+              '<td><span class="side-' + (f.side === 'B' ? 'buy' : 'sell') + '">' + (f.side === 'B' ? 'BUY' : 'SELL') + '</span></td>' +
               '<td>' + f.sz + '</td>' +
-              '<td>' + formatPrice(parseFloat(f.px)) + '</td></tr>'
-            ).join('') +
-            '</tbody></table>'
+              '<td>' + formatPrice(parseFloat(f.px)) + '</td>' +
+              '<td>' + formatMoney(value) + '</td>' +
+              '<td class="negative">-$' + parseFloat(f.fee).toFixed(4) + '</td></tr>';
+            }).join('') +
+            '</tbody></table></div>'
+          }
+        </div>
+        
+        <!-- Ledger (Depósitos/Saques) -->
+        <div class="card full-width">
+          <h2>💳 Histórico de Transações (Ledger)</h2>
+          ${ledger.length === 0 ?
+            '<p style="color: #888; text-align: center; padding: 20px;">Nenhuma transação registrada</p>' :
+            '<div class="scrollable"><table><thead><tr><th>Data/Hora</th><th>Tipo</th><th>Valor</th><th>Hash</th></tr></thead><tbody>' +
+            ledger.map(l => {
+              const type = l.delta?.type || 'unknown';
+              const usdc = parseFloat(l.delta?.usdc || 0);
+              const typeClass = type === 'deposit' ? 'deposit' : type === 'withdraw' ? 'withdraw' : 'buy';
+              const typeLabel = type === 'deposit' ? 'DEPÓSITO' : type === 'withdraw' ? 'SAQUE' : type.toUpperCase();
+              return '<tr><td>' + formatTimeShort(l.time) + '</td>' +
+              '<td><span class="side-' + typeClass + '">' + typeLabel + '</span></td>' +
+              '<td class="' + (type === 'deposit' ? 'positive' : 'negative') + '">' + (type === 'deposit' ? '+' : '-') + formatMoney(Math.abs(usdc)) + '</td>' +
+              '<td><a class="hash-link" href="https://arbiscan.io/tx/' + l.hash + '" target="_blank">' + truncateHash(l.hash) + '</a></td></tr>';
+            }).join('') +
+            '</tbody></table></div>'
           }
         </div>
       `;
       
+      // Render chart after DOM update
+      setTimeout(() => renderChart(portfolio), 100);
+      
       document.getElementById('update-time').textContent = '⏱️ Última atualização: ' + formatTime(Date.now()) + ' | Auto-refresh: 30s';
+    }
+    
+    function changePeriod(period) {
+      currentPeriod = period;
+      loadData();
     }
     
     // Initial load
